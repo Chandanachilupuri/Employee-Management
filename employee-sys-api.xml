@@ -1,0 +1,428 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns:db="http://www.mulesoft.org/schema/mule/db"
+    xmlns="http://www.mulesoft.org/schema/mule/core"
+    xmlns:apikit="http://www.mulesoft.org/schema/mule/mule-apikit"
+    xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+    xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+    xmlns:http="http://www.mulesoft.org/schema/mule/http"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="
+http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+http://www.mulesoft.org/schema/mule/mule-apikit http://www.mulesoft.org/schema/mule/mule-apikit/current/mule-apikit.xsd
+http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd">
+
+    <!-- Global HTTP Listener - System API on port 8083 -->
+    <http:listener-config name="http_Listener_Config">
+        <http:listener-connection host="0.0.0.0" port="${http.port}"/>
+    </http:listener-config>
+
+    <!-- APIKit Config - disableValidations=true stops RAML datetime rejection -->
+    <apikit:config
+        name="employee-sys-api-config"
+        api="resource::3534b4e0-4d51-49af-9f6c-976319346b5a:employee-sys-api:2.0.0:raml:zip:employee-sys-api.raml"
+        outboundHeadersMapName="outboundHeaders"
+        httpStatusVarName="httpStatus"
+        disableValidations="true"/>
+
+    <!-- Global Database Config - MySQL connection -->
+
+    <!-- MAIN FLOW - APIKit Router -->
+    <db:config name="Database_Config" doc:name="Database Config" doc:id="77324298-9835-47bf-b8ed-bb2e03a50206" >
+		<db:my-sql-connection host="${db.host}" port="${db.port}" user="${db.user}" password="${db.password}" database="${db.database}" />
+	</db:config>
+	<configuration-properties doc:name="Configuration properties" doc:id="a48bb4be-9a9b-4e42-88c9-bbdc954d2724" file="application.yaml" />
+	<flow name="employee-sys-api-main">
+        <http:listener config-ref="http_Listener_Config" path="/api/*">
+            <http:response statusCode="#[vars.httpStatus default 200]">
+                <http:headers><![CDATA[#[vars.outboundHeaders default {}]]]></http:headers>
+            </http:response>
+            <http:error-response statusCode="#[vars.httpStatus default 500]">
+                <http:body><![CDATA[#[payload]]]></http:body>
+                <http:headers><![CDATA[#[vars.outboundHeaders default {}]]]></http:headers>
+            </http:error-response>
+        </http:listener>
+        <apikit:router config-ref="employee-sys-api-config"/>
+		<error-handler ref="global-error-handler" />
+    </flow>
+
+    <!-- CONSOLE FLOW -->
+    <flow name="employee-sys-api-console">
+        <http:listener config-ref="http_Listener_Config" path="/console/*">
+            <http:response statusCode="#[vars.httpStatus default 200]">
+                <http:headers><![CDATA[#[vars.outboundHeaders default {}]]]></http:headers>
+            </http:response>
+            <http:error-response statusCode="#[vars.httpStatus default 500]">
+                <http:body><![CDATA[#[payload]]]></http:body>
+                <http:headers><![CDATA[#[vars.outboundHeaders default {}]]]></http:headers>
+            </http:error-response>
+        </http:listener>
+        <apikit:console config-ref="employee-sys-api-config"/>
+    </flow>
+
+    <!-- POST /employees - Insert new employee into DB -->
+    <flow name="post:\employees:employee-sys-api-config">
+
+        <logger level="INFO"
+            message="System API POST received: #[payload]"
+            doc:name="Log Request"/>
+
+        <db:insert doc:name="Insert Employee" autoGenerateKeys="true" config-ref="Database_Config">
+            <db:sql><![CDATA[
+                INSERT INTO employees
+                (first_name, last_name, email, department, designation, salary, created_at)
+                VALUES
+                (:firstName, :lastName, :email, :department, :designation, :salary, :createdAt)
+            ]]></db:sql>
+            <db:input-parameters><![CDATA[#[{
+                firstName:   payload.firstName,
+                lastName:    payload.lastName,
+                email:       payload.email,
+                department:  payload.department,
+                designation: payload.designation,
+                salary:      payload.salary,
+                createdAt:   payload.createdAt
+            }]]]></db:input-parameters>
+        </db:insert>
+
+        <logger level="INFO" doc:name="Logger" doc:id="a407af36-0465-4e1e-a733-86a79f2d814c" message='"Generated Keys:#[payload.generatedKeys]'/>
+		<ee:transform doc:name="Build Success Response">
+            <ee:message>
+                <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    message: "Employee created successfully",
+    
+}]]></ee:set-payload>
+            </ee:message>
+        </ee:transform>
+
+    </flow>
+
+    <!-- GET /employees - Fetch all employees with optional department filter -->
+    <flow name="get:\employees:employee-sys-api-config">
+
+        <logger level="INFO"
+            message="System API GET all employees called"
+            doc:name="Log Request"/>
+
+        <db:select doc:name="Select All Employees" config-ref="Database_Config">
+            <db:sql><![CDATA[SELECT * FROM employees WHERE (:department IS NULL OR department= :department)
+                
+            ]]></db:sql>
+			<db:input-parameters ><![CDATA[#[{
+  department: attributes.queryParams.department default null
+}]]]></db:input-parameters>
+        </db:select>
+
+        <ee:transform doc:name="Format All Employees Response">
+            <ee:message>
+                <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+payload map (row) -> {
+    id:          row.id as String,
+    firstName:   row.first_name,
+    lastName:    row.last_name,
+    email:       row.email,
+    department:  row.department,
+    designation: row.designation,
+    salary:      row.salary,
+    createdAt:   row.created_at default "" as String
+}]]></ee:set-payload>
+            </ee:message>
+        </ee:transform>
+
+    </flow>
+
+    <!-- GET /employees/{employeeId} - Fetch single employee by ID -->
+    <flow name="get:\employees\(employeeId):employee-sys-api-config">
+
+        <logger level="INFO"
+            message="System API GET by ID: #[attributes.uriParams.employeeId]"
+            doc:name="Log Request"/>
+
+        <db:select doc:name="Find Employee by ID" config-ref="Database_Config">
+            <db:sql><![CDATA[SELECT * FROM employees WHERE id = :id
+            ]]></db:sql>
+            <db:input-parameters><![CDATA[#[{
+                id: attributes.uriParams.employeeId as Number
+            }]]]></db:input-parameters>
+        </db:select>
+
+        <choice doc:name="Employee Exists?">
+            <when expression="#[isEmpty(payload)]">
+                <ee:transform doc:name="404 Not Found">
+                    <ee:message>
+                        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    code:    404,
+    message: "Employee with ID " ++ (attributes.uriParams.employeeId default "unknown") ++ " not found"
+}]]></ee:set-payload>
+                    </ee:message>
+                </ee:transform>
+                <set-variable variableName="httpStatus" value="404" doc:name="Set 404"/>
+            </when>
+            <otherwise>
+                <ee:transform doc:name="Format Single Employee">
+                    <ee:message>
+                        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+var emp = payload[0]
+---
+{
+    id:          emp.id as String,
+    firstName:   emp.first_name,
+    lastName:    emp.last_name,
+    email:       emp.email,
+    department:  emp.department,
+    designation: emp.designation,
+    salary:      emp.salary,
+    createdAt:   emp.created_at as String
+}]]></ee:set-payload>
+                    </ee:message>
+                </ee:transform>
+            </otherwise>
+        </choice>
+
+    </flow>
+
+    <!-- PUT /employees/{employeeId} - Update existing employee -->
+
+    <!-- DELETE /employees/{employeeId} - Delete employee by ID -->
+    <flow name="put:\employees\(employeeId):employee-sys-api-config">
+ 
+<logger level="INFO"
+message="System API PUT by ID: #[attributes.uriParams.employeeId]"
+doc:name="Log Request"/>
+ 
+<!-- STORE EMPLOYEE ID AS FIRST STEP - BEFORE ANY OPERATIONS THAT OVERWRITE PAYLOAD -->
+<set-variable variableName="employeeId"
+value="#[attributes.uriParams.employeeId as Number]"
+doc:name="Store Employee ID"/>
+ 
+<!-- Save incoming payload BEFORE db:select overwrites it -->
+<set-variable variableName="employeeData"
+value="#[payload]"
+doc:name="Store Request Payload"/>
+ 
+<!-- Check if employee exists first -->
+<logger level="INFO" doc:name="Logger" message='"Employee ID: #[vars.employeeId]"'/>
+<db:select doc:name="Check Employee Exists" config-ref="Database_Config">
+<db:sql><![CDATA[SELECT id FROM employees WHERE id = :id]]></db:sql>
+<db:input-parameters><![CDATA[#[{
+id: vars.employeeId
+}]]]></db:input-parameters>
+</db:select>
+ 
+<choice doc:name="Employee Exists?">
+ 
+<!-- Employee NOT found -->
+<when expression="#[isEmpty(payload)]">
+<ee:transform doc:name="404 Not Found">
+<ee:message>
+<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+code: 404,
+message: "Employee with ID " ++ (vars.employeeId as String default "unknown") ++ " not found"
+}]]></ee:set-payload>
+</ee:message>
+</ee:transform>
+<set-variable variableName="httpStatus" value="404" doc:name="Set 404"/>
+</when>
+ 
+<!-- Employee found - proceed with update -->
+<otherwise>
+<logger level="INFO" doc:name="Logger" message='"Sys API received Id: #[vars.employeeId]"' />
+<db:update doc:name="Update Employee" config-ref="Database_Config">
+<db:sql><![CDATA[
+UPDATE employees
+SET
+first_name = :firstName,
+last_name = :lastName,
+email = :email,
+department = :department,
+designation = :designation,
+salary = :salary
+WHERE id = :id
+]]></db:sql>
+<db:input-parameters><![CDATA[#[{
+firstName: vars.employeeData.firstName,
+lastName: vars.employeeData.lastName,
+email: vars.employeeData.email,
+department: vars.employeeData.department,
+designation: vars.employeeData.designation,
+salary: vars.employeeData.salary,
+id: vars.employeeId
+}]]]></db:input-parameters>
+</db:update>
+<ee:transform doc:name="Success Response">
+<ee:message>
+<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+message: "Employee updated successfully",
+id: vars.employeeId as String
+}]]></ee:set-payload>
+</ee:message>
+</ee:transform>
+</otherwise>
+ 
+</choice>
+ 
+</flow>
+<flow name="delete:\employees\(employeeId):employee-sys-api-config">
+ 
+<!-- STEP 1: Store Employee ID FIRST - before any operations -->
+ 
+<set-variable variableName="employeeId"
+ 
+value="#[attributes.uriParams.employeeId as Number]"
+ 
+doc:name="Store Employee ID"/>
+ 
+ 
+ 
+<logger level="INFO"
+ 
+message="System API DELETE ID: #[vars.employeeId]"
+ 
+doc:name="Log Request"/>
+ 
+ 
+ 
+<!-- STEP 2: Check if employee exists first -->
+ 
+<db:select doc:name="Check Employee Exists" config-ref="Database_Config">
+ 
+<db:sql><![CDATA[
+ 
+SELECT id FROM employees WHERE id = :id
+ 
+]]></db:sql>
+ 
+<db:input-parameters><![CDATA[#[{
+ 
+id: vars.employeeId
+ 
+}]]]></db:input-parameters>
+ 
+</db:select>
+ 
+ 
+ 
+<choice doc:name="Employee Exists?">
+ 
+ 
+ 
+<!-- Employee NOT found -->
+ 
+<when expression="#[isEmpty(payload)]">
+ 
+<ee:transform doc:name="404 Not Found">
+ 
+<ee:message>
+ 
+<ee:set-payload><![CDATA[%dw 2.0
+ 
+output application/json
+ 
+---
+ 
+{
+ 
+code: 404,
+ 
+message: "Employee with ID " ++ (vars.employeeId as String) ++ " not found, cannot delete"
+ 
+}]]></ee:set-payload>
+ 
+</ee:message>
+ 
+</ee:transform>
+ 
+<set-variable variableName="httpStatus" value="404" doc:name="Set 404"/>
+ 
+</when>
+ 
+ 
+ 
+<!-- Employee found - proceed with delete -->
+ 
+<otherwise>
+ 
+<logger level="INFO"
+ 
+message="Employee found, proceeding with deletion of ID: #[vars.employeeId]"
+ 
+doc:name="Logger"/>
+ 
+ 
+ 
+<db:delete doc:name="Delete Employee" config-ref="Database_Config">
+ 
+<db:sql><![CDATA[
+ 
+DELETE FROM employees WHERE id = :id
+ 
+]]></db:sql>
+ 
+<db:input-parameters><![CDATA[#[{
+ 
+id: vars.employeeId
+ 
+}]]]></db:input-parameters>
+ 
+</db:delete>
+ 
+ 
+ 
+<!-- SUCCESS RESPONSE - Now returns 200 OK with body (was 204) -->
+ 
+<ee:transform doc:name="Success Response">
+ 
+<ee:message>
+ 
+<ee:set-payload><![CDATA[%dw 2.0
+ 
+output application/json
+ 
+---
+ 
+{
+ 
+message: "Employee deleted successfully",
+ 
+id: vars.employeeId as String,
+ 
+status: "deleted"
+ 
+}]]></ee:set-payload>
+ 
+</ee:message>
+ 
+<ee:variables>
+ 
+<!-- SET STATUS TO 200 SO BODY IS RETURNED -->
+ 
+<ee:set-variable variableName="httpStatus">200</ee:set-variable>
+ 
+</ee:variables>
+ 
+</ee:transform>
+ 
+</otherwise>
+ 
+ 
+ 
+</choice>
+ 
+</flow>
+</mule>

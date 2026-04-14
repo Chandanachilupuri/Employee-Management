@@ -1,0 +1,9 @@
+http:
+  port: "8083"
+
+db:
+  host: "localhost"
+  port: "3306"
+  database: "employee_db"
+  user: "root"
+  password: "root"

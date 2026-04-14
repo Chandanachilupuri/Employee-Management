@@ -1,0 +1,233 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns:validation="http://www.mulesoft.org/schema/mule/validation"
+	xmlns="http://www.mulesoft.org/schema/mule/core" 
+	xmlns:apikit="http://www.mulesoft.org/schema/mule/mule-apikit" 
+	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" 
+	xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" 
+	xmlns:http="http://www.mulesoft.org/schema/mule/http" 
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
+	xsi:schemaLocation="
+http://www.mulesoft.org/schema/mule/validation http://www.mulesoft.org/schema/mule/validation/current/mule-validation.xsd 
+http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd 
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd 
+http://www.mulesoft.org/schema/mule/mule-apikit http://www.mulesoft.org/schema/mule/mule-apikit/current/mule-apikit.xsd 
+http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd ">
+
+    <http:listener-config name="http_Listener_Config">
+        <http:listener-connection host="0.0.0.0" port="${http.port}" />
+    </http:listener-config>
+
+    <apikit:config name="employee-proc-api-config" api="resource::3534b4e0-4d51-49af-9f6c-976319346b5a:employee-proc-api:1.0.0:raml:zip:employee-proc-api.raml" outboundHeadersMapName="outboundHeaders" httpStatusVarName="httpStatus" disableValidations="true" />
+
+    <http:request-config name="System_api-config" doc:name="HTTP Request config">
+		<http:request-connection host="${system.host}" port="${system.port}" />
+	</http:request-config>
+
+    
+
+    <configuration-properties doc:name="Configuration properties" doc:id="281870d6-cc8f-4ff8-b8f4-1a2647d23e3a" file="application.yaml" />
+	<flow name="employee-proc-api-main">
+        <http:listener config-ref="http_Listener_Config" path="/api/*">
+            <http:response statusCode="#[vars.httpStatus default 200]">
+                <http:headers><![CDATA[#[vars.outboundHeaders default {}]]]></http:headers>
+            </http:response>
+            <http:error-response statusCode="#[vars.httpStatus default 500]">
+                <http:body><![CDATA[#[payload]]]></http:body>
+                <http:headers><![CDATA[#[vars.outboundHeaders default {}]]]></http:headers>
+            </http:error-response>
+        </http:listener>
+        <apikit:router config-ref="employee-proc-api-config" />
+		<error-handler ref="global-error-handler" />
+    </flow>
+
+     <flow name="employee-proc-api-console">
+        <http:listener config-ref="http_Listener_Config" path="/console/*">
+            <http:response statusCode="#[vars.httpStatus default 200]">
+                <http:headers><![CDATA[#[vars.outboundHeaders default {}]]]></http:headers>
+            </http:response>
+            <http:error-response statusCode="#[vars.httpStatus default 500]">
+                <http:body><![CDATA[#[payload]]]></http:body>
+                <http:headers><![CDATA[#[vars.outboundHeaders default {}]]]></http:headers>
+            </http:error-response>
+        </http:listener>
+        <apikit:console config-ref="employee-proc-api-config" />
+    </flow>
+    <sub-flow name="validate-employee-data-sub-flow">
+        <validation:is-email 
+            email="#[payload.email]" 
+            message="Invalid email format provided" 
+            doc:name="Validate Email" />
+        <choice doc:name="Validate Salary">
+            <when expression="#[(payload.salary default 0) &lt;= 0]">
+                <raise-error type="APP:VALIDATION_ERROR" description="Salary must be greater than 0" />
+            </when>
+            <otherwise>
+                <logger level="DEBUG" message="Salary OK" doc:name="Log Salary OK" />
+            </otherwise>
+        </choice>
+        <choice doc:name="Validate Department">
+            <when expression="#[not (['Engineering','HR','Finance','Marketing','Operations'] contains payload.department)]">
+                <raise-error type="APP:VALIDATION_ERROR" description="Invalid Department" />
+            </when>
+            <otherwise>
+                <logger level="DEBUG" message="Department OK" doc:name="Log Dept OK" />
+            </otherwise>
+        </choice>
+    </sub-flow>
+    <flow name="post:\employees:employee-proc-api-config">
+        <logger level="INFO" message="Process API POST received" doc:name="Log Request" />
+        <set-variable value="#[payload]" doc:name="Store Original Payload" variableName="originalPayload"/>
+        
+        <flow-ref name="validate-employee-data-sub-flow" doc:name="Call Validation" />
+
+        <ee:transform doc:name="Transform for System API">
+            <ee:message>
+                <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    firstName:    (vars.originalPayload.firstName default "") as String,
+    lastName:     (vars.originalPayload.lastName default "") as String,
+    email:        lower((vars.originalPayload.email default "") as String),
+    department:   (vars.originalPayload.department default "") as String,
+    designation:  (vars.originalPayload.designation default "") as String,
+    salary:       (vars.originalPayload.salary default 0) as Number,
+    createdAt: now() as String {format: "yyyy-MM-dd HH:mm:ss"}
+}]]></ee:set-payload>
+            </ee:message>
+        </ee:transform>
+
+        <http:request method="POST" path="/api/employees" config-ref="System_api-config" doc:name="Call System API POST"/>
+    </flow>
+<flow name="get:\employees:employee-proc-api-config">
+  <logger level="INFO" message="Process API GET all" doc:name="Log Request"/>
+  <http:request path="/api/employees" config-ref="System_api-config"
+    doc:name="Call System API - GET All">
+    <http:query-params><![CDATA[#[output application/java
+      --- { "department" : attributes.queryParams.department default null }]]]>
+    </http:query-params>
+  </http:request>
+</flow>
+
+    <flow name="get:\employees\(employeeId):employee-proc-api-config">
+        <logger level="INFO" message="Process API GET ID: #[attributes.uriParams.employeeId]" doc:name="Log Request"/>
+        <http:request path="#['/api/employees/' ++ attributes.uriParams.employeeId]" config-ref="System_api-config" doc:name="Call System API - GET by ID"/>
+    </flow>
+<flow name="put:\employees\(employeeId):employee-proc-api-config">
+
+    <logger level="INFO" message="Process API Update ID: #[attributes.uriParams.employeeId]" />
+
+    <set-variable variableName="originalPayload" value="#[payload]"/>
+
+    <flow-ref name="validate-employee-data-sub-flow"/>
+
+    <ee:transform doc:name="Transform for System API">
+        <ee:message>
+            <ee:set-payload><![CDATA[
+%dw 2.0
+output application/json
+---
+{
+    firstName: vars.originalPayload.firstName default "",
+    lastName: vars.originalPayload.lastName default "",
+    email: lower(vars.originalPayload.email default ""),
+    department: vars.originalPayload.department default "",
+    designation: vars.originalPayload.designation default "",
+    salary: vars.originalPayload.salary default 0
+}
+]]></ee:set-payload>
+        </ee:message>
+    </ee:transform>
+
+    <!-- Ensure payload -->
+    <set-payload value="#[payload]" />
+
+    <http:request
+        method="PUT"
+        path="#['/api/employees/' ++ attributes.uriParams.employeeId]"
+        config-ref="System_api-config"/>
+
+</flow>
+<flow name="delete:\employees\(employeeId):employee-proc-api-config">
+ 
+ 
+<!-- STEP 1: Store Employee ID FIRST - before any operations -->
+ 
+<set-variable variableName="employeeId"
+ 
+value="#[attributes.uriParams.employeeId]"
+ 
+doc:name="Store Employee ID"/>
+ 
+ 
+<logger level="INFO"
+ 
+message="Process API DELETE ID: #[vars.employeeId]"
+ 
+doc:name="Log Request"/>
+ 
+ 
+<!-- STEP 2: Call System API with stored variable -->
+ 
+<http:request method="DELETE"
+ 
+path="#['/api/employees/' ++ vars.employeeId]"
+ 
+config-ref="System_api-config"
+ 
+doc:name="Call System API - DELETE"/>
+ 
+ 
+ 
+<!-- STEP 3: CAPTURE THE HTTP RESPONSE STATUS - This is the FIX -->
+ 
+<logger level="INFO"
+ 
+message="Process API received status: #[attributes.statusCode]"
+ 
+doc:name="Log Response Status"/>
+ 
+ 
+ 
+<choice doc:name="Check Response Status">
+ 
+<!-- If System API returned 200 OK -->
+ 
+<when expression="#[attributes.statusCode == 200]">
+ 
+<set-variable variableName="httpStatus" value="200" doc:name="Set httpStatus 200"/>
+ 
+<logger level="INFO" message="Propagating 200 OK to Experience API" doc:name="Logger"/>
+ 
+</when>
+ 
+ 
+ 
+<!-- If System API returned 404 Not Found -->
+ 
+<when expression="#[attributes.statusCode == 404]">
+ 
+<set-variable variableName="httpStatus" value="404" doc:name="Set httpStatus 404"/>
+ 
+</when>
+ 
+ 
+ 
+<!-- For any other status (500, 503, etc) -->
+ 
+<otherwise>
+ 
+<set-variable variableName="httpStatus"
+ 
+value="#[attributes.statusCode]"
+ 
+doc:name="Set httpStatus from response"/>
+ 
+</otherwise>
+ 
+</choice>
+ 
+ 
+</flow>
+   
+</mule>

@@ -1,0 +1,175 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+    xmlns:apikit="http://www.mulesoft.org/schema/mule/mule-apikit"
+    xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+    xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+    xmlns:http="http://www.mulesoft.org/schema/mule/http"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="
+http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+http://www.mulesoft.org/schema/mule/mule-apikit http://www.mulesoft.org/schema/mule/mule-apikit/current/mule-apikit.xsd
+http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+    
+    <!-- Global HTTP Listener Config - Experience API on port 8081 -->
+    <http:listener-config name="Http_Listener_Config">
+        <http:listener-connection host="0.0.0.0" port="${http.port}"/>
+    </http:listener-config>
+
+    <!-- APIKit Config pointing to published RAML -->
+    <apikit:config
+        name="employee-exp-api-config"
+        api="resource::3534b4e0-4d51-49af-9f6c-976319346b5a:employee-exp-api:1.0.0:raml:zip:employee-exp-api.raml"
+        outboundHeadersMapName="outboundHeaders"
+        httpStatusVarName="httpStatus"/>
+
+    <!-- Global HTTP Request Config - pointing to Process API on port 8082 -->
+    <http:request-config name="Process_api-config" doc:name="HTTP Request config">
+        <http:request-connection host="${process.host}" port="${process.port}"/>
+    </http:request-config>
+
+    <!-- MAIN FLOW - APIKit Router -->
+    <configuration-properties doc:name="Configuration properties" doc:id="ed03326a-e945-4f20-b388-7a85ebb2657e" file="application.yaml" />
+	<flow name="employee-exp-api-main">
+        <http:listener config-ref="Http_Listener_Config" path="/api/*">
+            <http:response statusCode="#[vars.httpStatus default 200]">
+                <http:headers><![CDATA[#[vars.outboundHeaders default {}]]]></http:headers>
+            </http:response>
+            <http:error-response statusCode="#[vars.httpStatus default 500]">
+                <http:body><![CDATA[#[payload]]]></http:body>
+                <http:headers><![CDATA[#[vars.outboundHeaders default {}]]]></http:headers>
+            </http:error-response>
+        </http:listener>
+        <apikit:router config-ref="employee-exp-api-config"/>
+		<error-handler ref="global-error-handler" />
+    </flow>
+
+    <!-- CONSOLE FLOW -->
+    <flow name="employee-exp-api-console">
+        <http:listener config-ref="Http_Listener_Config" path="/console/*">
+            <http:response statusCode="#[vars.httpStatus default 200]">
+                <http:headers><![CDATA[#[vars.outboundHeaders default {}]]]></http:headers>
+            </http:response>
+            <http:error-response statusCode="#[vars.httpStatus default 500]">
+                <http:body><![CDATA[#[payload]]]></http:body>
+                <http:headers><![CDATA[#[vars.outboundHeaders default {}]]]></http:headers>
+            </http:error-response>
+        </http:listener>
+        <apikit:console config-ref="employee-exp-api-config"/>
+    </flow>
+
+    <!-- POST /employees - Create new employee -->
+    <flow name="post:\employees:employee-exp-api-config">
+        <logger level="INFO"
+            message="EXP API POST /employees called with payload: #[payload]"
+            doc:name="Log Request"/>
+        <http:request method="POST"
+            path="/api/employees"
+            config-ref="Process_api-config"
+            doc:name="Call Process API POST"/>
+    </flow>
+
+    <!-- GET /employees - Get all employees -->
+    <flow name="get:\employees:employee-exp-api-config">
+        <logger level="INFO"
+            message="EXP API GET /employees called"
+            doc:name="Log Request"/>
+        <http:request method="GET"
+            path="/api/employees"
+            config-ref="Process_api-config"
+            doc:name="Call Process API GET All"/>
+    </flow>
+
+    <!-- GET /employees/{employeeId} - Get employee by ID -->
+    <flow name="get:\employees\(employeeId):employee-exp-api-config">
+        <logger level="INFO"
+            message="EXP API GET /employees/#[attributes.uriParams.employeeId] called"
+            doc:name="Log Request"/>
+        <http:request path="#['/api/employees/' ++ attributes.uriParams.employeeId]"
+            config-ref="Process_api-config"
+            doc:name="Call Process API GET by ID"/>
+    </flow>
+
+    <!-- PUT /employees/{employeeId} - Update employee -->
+    <flow name="put:\employees\(employeeId):employee-exp-api-config">
+        <logger level="INFO" message="EXP API PUT /employees/#[attributes.uriParams.employeeId] called"
+            doc:name="Log Request"/>
+        <set-payload value="#[payload]" doc:name="Set Payload" doc:id="7ffa7b1c-0a85-450f-93b5-0fc5eebe2617" />
+		<http:request method="PUT"
+            path="#['/api/employees/'++ attributes.uriParams.employeeId]"
+            config-ref="Process_api-config"
+
+            doc:name="Call Process API PUT"/>
+    </flow>
+
+    <!-- DELETE /employees/{employeeId} - Delete employee -->
+<flow name="delete:\employees\(employeeId):employee-exp-api-config">
+ 
+<logger level="INFO"
+ 
+message="EXP API DELETE /employees/#[attributes.uriParams.employeeId] called"
+ 
+doc:name="Log Request"/>
+ 
+<http:request method="DELETE"
+ 
+path="#['/api/employees/' ++ attributes.uriParams.employeeId]"
+ 
+config-ref="Process_api-config"
+ 
+doc:name="Call Process API DELETE"/>
+ 
+ 
+ 
+<!-- FIX: CAPTURE THE HTTP RESPONSE STATUS FROM PROCESS API -->
+ 
+<logger level="INFO"
+ 
+message="EXP API received status from Process API: #[attributes.statusCode]"
+ 
+doc:name="Log Response Status"/>
+ 
+ 
+ 
+<choice doc:name="Check Response Status">
+ 
+<!-- If Process API returned 200 OK -->
+ 
+<when expression="#[attributes.statusCode == 200]">
+ 
+<set-variable variableName="httpStatus" value="200" doc:name="Set httpStatus 200"/>
+ 
+<logger level="INFO" message="EXP API: Propagating 200 OK back to client" doc:name="Logger"/>
+ 
+</when>
+ 
+ 
+ 
+<!-- If Process API returned 404 Not Found -->
+ 
+<when expression="#[attributes.statusCode == 404]">
+ 
+<set-variable variableName="httpStatus" value="404" doc:name="Set httpStatus 404"/>
+ 
+<logger level="INFO" message="EXP API: Propagating 404 Not Found back to client" doc:name="Logger"/>
+ 
+</when>
+ 
+ 
+ 
+<!-- For any other status (500, 503, etc) -->
+ 
+<otherwise>
+ 
+<set-variable variableName="httpStatus"
+ 
+value="#[attributes.statusCode]"
+ 
+doc:name="Set httpStatus from response"/>
+ 
+</otherwise>
+ 
+</choice>
+ 
+</flow>
+</mule>
